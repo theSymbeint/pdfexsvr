@@ -2,13 +2,8 @@ import PDFDocument from "pdfkit";
 import blobStream from "blob-stream";
 import { Page, Label, Data, Font, Image, Shape } from "./types/template.types";
 import { HELVETICA } from "./types/font.types";
-import path from "node:path";
 import fetch from "node-fetch";
 import { getFontResource, getImageResource } from "./resource_loader";
-
-const IMG_RES_LOC_BASE = process.env.IMG_RES_LOC_BASE || "../public/img/";
-
-const FONT_RES_LOC_BASE = process.env.FONT_RES_LOC_BASE || "../public/fonts/";
 
 export default class PdfBuilder {
   private templateStr: string;
@@ -19,6 +14,7 @@ export default class PdfBuilder {
   private currentPage: Page | undefined;
   private baseFont: string | undefined;
   private baseFontSize: number | undefined;
+  private allowLineBreakDefault: boolean | undefined;
   //private baseFontColor: string | Array<number> | undefined
 
   constructor(docTemplate: string, docData: string) {
@@ -42,6 +38,7 @@ export default class PdfBuilder {
         layout: page.orientation,
         margin: page.margin || 0,
       });
+      this.allowLineBreakDefault = page.allowLineBreak || false;
       this.currentPage = page;
       await this.loadFonts();
       //TODO Load these based off env vars
@@ -115,6 +112,7 @@ export default class PdfBuilder {
       console.log("NO SHAPES TO PROCESS");
       return;
     }
+
     this.currentPage!.shapes?.forEach((shape: Shape, index: number) => {
       console.log("SHAPE: ", shape);
       if (shape.type == "rect") {
@@ -198,14 +196,14 @@ export default class PdfBuilder {
           .fontSize(<number>lblObj.fontSize || <number>this.baseFontSize)
           .fillColor(lblObj.color || "black")
           .text(this.resolveFormatAndType(lblObj), lblObj.x, lblObj.y, {
-            lineBreak: false,
+            lineBreak: lblObj.allowLineBreak || this.allowLineBreakDefault,
           });
       } else {
         this.doc
           ?.fontSize(<number>lblObj.fontSize || <number>this.baseFontSize) // Use font size if its available
           .fillColor(lblObj.color || "black")
           .text(this.resolveFormatAndType(lblObj), lblObj.x, lblObj.y, {
-            lineBreak: false,
+            lineBreak: lblObj.allowLineBreak || this.allowLineBreakDefault,
           });
       }
       this.resetFont();
@@ -224,7 +222,7 @@ export default class PdfBuilder {
           .fillColor(dataObj.color || "black")
           .fontSize(dataObj.fontSize as number)
           .text(this.resolveFormatAndType(dataObj), dataObj.x, dataObj.y, {
-            lineBreak: false,
+            lineBreak: dataObj.allowLineBreak || this.allowLineBreakDefault,
           });
       } else {
         //Prints data with base font
@@ -232,7 +230,7 @@ export default class PdfBuilder {
           ?.fillColor(dataObj.color || "black")
           .fontSize(<number>dataObj.fontSize || <number>this.baseFontSize) //use font size if available
           .text(this.resolveFormatAndType(dataObj), dataObj.x, dataObj.y, {
-            lineBreak: false,
+            lineBreak: dataObj.allowLineBreak || this.allowLineBreakDefault,
           });
       }
       this.resetFont();

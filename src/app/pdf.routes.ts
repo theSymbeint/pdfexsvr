@@ -2,11 +2,21 @@ import { Hono } from "hono";
 import { PassThrough } from "node:stream";
 import PdfBuilder from "../lib/pdf.builder";
 import pbClient from "../lib/db/pb";
+import { HTTPException } from "hono/http-exception";
 
-const user = process.env.DBUSER || "dandregregory@yahoo.com";
-const passwd = process.env.DBPASS || "007trishten1";
+const user = process.env.DBUSER;
+const passwd = process.env.DBPASSWD;
 
 const app = new Hono();
+
+//This middleware checks to see if the database credentials are set.
+app.use(async (c, next) => {
+  if (user == undefined || passwd == undefined) {
+    throw new HTTPException(500, { message: "DATABASE CREDENTIALS NOT SET" });
+  } else {
+    await next();
+  }
+});
 
 app.get("/test", async (c) => {
   return c.text("Hello World!");
@@ -16,13 +26,12 @@ app.get("/test", async (c) => {
 // to be over first and stored in a token record.
 app.post("/token/:apikey", async (c) => {
   try {
-    const auth = await pbClient.admins.authWithPassword(user, passwd);
+    await pbClient.admins.authWithPassword(user as string, passwd as string);
 
     const apikey = c.req.param("apikey"); //TODO run apikey through filter for saftey
     console.log("APIKEY: ", apikey);
-    let _user = null;
     try {
-      _user = await pbClient
+      await pbClient
         .collection("users")
         .getFirstListItem(`apikey = "${apikey}"`);
     } catch (e: any) {
@@ -53,57 +62,54 @@ app.post("/token/:apikey", async (c) => {
 
 //This route creates the PDF for a doc template and a token rec data.
 app.get("/pdf/:docname/:ptoken", async (c) => {
-  /*try {
-    console.debug('PARAMS ARE: ', req.params)
+  let docrec: any;
+  let tokrec: any;
+  try {
+    console.debug("PARAMS ARE: ", c.req.param());
     //Grab access to database
-    const auth = await pbClient.admins.authWithPassword(user, passwd)
+    await pbClient.admins.authWithPassword(user as string, passwd as string);
 
     //Get the doc template record
-    const docrec = await pbClient
-        .collection('templates')
-        .getFirstListItem(`docName = "${req.params['docname']}"`)
+    docrec = await pbClient
+      .collection("templates")
+      .getFirstListItem(`docName = "${c.req.param("docname")}"`);
 
     //Get the token record with data
-    const tokrec = await pbClient
-        .collection('pTokens')
-        .getFirstListItem(`id = "${req.params['ptoken']}"`)
+    tokrec = await pbClient
+      .collection("pTokens")
+      .getFirstListItem(`id = "${c.req.param("ptoken")}"`);
 
     //increment the docReqCount
-    pbClient
-        .collection('pTokens')
-        .update(tokrec.id, { docReqCount: tokrec.docReqCount + 1 })
-    console.log(`${new Date().toISOString()} DOC DATA:`, tokrec.docData)
-
-    //Create the PDF builder
-    const doc = new PdfBuilder(docrec.doc, tokrec.docData)
-
-    //Create a stream to pipe the PDF to the response
-    const stream = new PassThrough()
-
-    // Set the response headers
-    res.setHeader('Content-Type', 'application/pdf')
-    res.setHeader('Content-Disposition', 'filename=sample.pdf')
-
-    //Build the PDF
-    await doc.build()
-    console.log(`${new Date().toISOString()} RENDERING PDF:`)
-
-    //Render the PDF to the stream
-    doc.renderS(stream)
-    console.log(`${new Date().toISOString()} PIPING PDF TO RESPONSE`)
-
-    //Pipe the stream to the response
-    stream.pipe(res)
-    console.log(`${new Date().toISOString()} SENT PDF TO CLIENT`)
+    await pbClient
+      .collection("pTokens")
+      .update(tokrec.id, { docReqCount: tokrec.docReqCount + 1 });
+    console.log(`${new Date().toISOString()} DOC DATA:`, tokrec.docData);
   } catch (e: any) {
-    console.log(e)
-    res.send('error')
-  }*/
-  return c.text("");
+    throw new HTTPException(500, { message: "Database Error" });
+  }
+
+  //Create the PDF builder
+  const doc = new PdfBuilder(docrec.doc, tokrec.docData);
+
+  //Create a stream to pipe the PDF to the response
+  const s = new PassThrough();
+
+  // Set the response headers
+  c.header("Content-Type", "application/pdf");
+  c.header("Content-Disposition", "filename=sample.pdf");
+
+  //Build the PDF
+  await doc.build();
+  console.log(`${new Date().toISOString()} RENDERING PDF:`);
+
+  //Render the PDF to the stream
+  await doc.renderS(s);
+
+  return c.body(s as any);
 });
 
 app.get("/pdf-test/:docname/:apikey", async (c: any) => {
-  const auth = await pbClient.admins.authWithPassword(user, passwd);
+  await pbClient.admins.authWithPassword(user as string, passwd as string);
 
   const docname = c.req.param("docname");
   const apikey = c.req.param("apikey");
@@ -136,7 +142,7 @@ app.get("/pdf-test/:docname/:apikey", async (c: any) => {
     return c.body(s);
   } catch (e: any) {
     console.log(e);
-    c.text("error");
+    throw new HTTPException(500, e.message);
   }
 });
 
