@@ -28,20 +28,26 @@ app.post("/token/:apikey", async (c) => {
   try {
     await pbClient.admins.authWithPassword(user as string, passwd as string);
 
-    const apikey = c.req.param("apikey"); //TODO run apikey through filter for saftey
+    const apikey = c.req.param("apikey");
     console.log("APIKEY: ", apikey);
-    try {
-      await pbClient
-        .collection("users")
-        .getFirstListItem(`apikey = "${apikey}"`);
-    } catch (e: any) {
-      return c.json({ msg: "Unauthorized" }, 401);
-    }
-
     const body = await c.req.json();
 
     const tempId = body.tempId;
     const data = body.data;
+    try {
+      const res = await pbClient
+        .collection("apikeys")
+        .getFirstListItem(`apikey = "${apikey}"`, {
+          expand: `userId`,
+          fields: "*,expand.userId.id",
+        });
+      //Will throw a not found error if the apikey is not found. meaning the user is unauthorized.
+      await pbClient
+        .collection("templates")
+        .getFirstListItem(`docName = "${tempId}" && userId = "${res.userId}"`);
+    } catch (e: any) {
+      return c.json({ msg: "Unauthorized" }, 401);
+    }
 
     const ptoken = {
       tempId,
