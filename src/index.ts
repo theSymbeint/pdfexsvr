@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { serveStatic } from "@hono/node-server/serve-static";
-import pdfRoutes from "./app/pdf.routes";
+import pdfRoutes from "./app/pdf.routes.js";
 
 const app = new Hono();
 
@@ -14,6 +14,7 @@ app.use("/*", serveStatic({ root: "./public" }));
 app.get("/healthcheck", (c) => {
   return c.text("OK!!");
 });
+
 app.route("/", pdfRoutes);
 
 const port = 8080;

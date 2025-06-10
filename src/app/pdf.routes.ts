@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { PassThrough } from "node:stream";
-import PdfBuilder from "../lib/pdf.builder";
-import pbClient from "../lib/db/pb";
+import PdfBuilder from "../lib/pdf.builder.js";
+import pbClient from "../lib/db/pb.js";
 import { HTTPException } from "hono/http-exception";
 
 const user = process.env.DBUSER;

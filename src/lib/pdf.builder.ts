@@ -1,9 +1,16 @@
 import PDFDocument from "pdfkit";
 import blobStream from "blob-stream";
-import { Page, Label, Data, Font, Image, Shape } from "./types/template.types";
-import { HELVETICA } from "./types/font.types";
+import {
+  Page,
+  Label,
+  Data,
+  Font,
+  Image,
+  Shape,
+} from "./types/template.types.js";
+import { HELVETICA } from "./types/font.types.js";
 import fetch from "node-fetch";
-import { getFontResource, getImageResource } from "./resource_loader";
+import { getFontResource, getImageResource } from "./resource_loader.js";
 
 export default class PdfBuilder {
   private templateStr: string;

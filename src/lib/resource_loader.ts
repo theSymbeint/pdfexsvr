@@ -1,4 +1,4 @@
-import pbClient from "./db/pb";
+import pbClient from "./db/pb.js";
 import fetch from "node-fetch";
 
 export async function getFontResource(fontName: string): Promise<ArrayBuffer> {
