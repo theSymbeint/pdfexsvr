@@ -2,9 +2,13 @@
   "name": "pdfexsvr",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "dev:local": "./scripts/dev-local.sh",
+    "pb:setup": "node scripts/dev-pocketbase-setup.mjs",
     "build": "tsc && cp -r public dist",
-    "copy": "cp -r public dist"
+    "build:image": "scripts/build-image.sh",
+    "copy": "cp -r public dist",
+    "test": "vitest"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.2",
@@ -13,7 +17,7 @@
     "hono": "^4.6.6",
     "node-fetch": "^3.3.2",
     "pdfkit": "^0.15.0",
-    "pocketbase": "^0.21.5"
+    "pocketbase": "^0.28.1"
   },
   "devDependencies": {
     "@types/blob-stream": "^0.1.33",
@@ -23,6 +27,7 @@
     "@types/pdfkit": "^0.13.5",
     "prettier": "^3.3.3",
     "tsx": "^4.7.1",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vitest": "^1.0.0"
   }
 }

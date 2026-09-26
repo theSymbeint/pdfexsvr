@@ -11,6 +11,7 @@ import {
 import { HELVETICA } from "./types/font.types.js";
 import fetch from "node-fetch";
 import { getFontResource, getImageResource } from "./resource_loader.js";
+import { logger, serializeError } from "./logger.js";
 
 export default class PdfBuilder {
   private templateStr: string;
@@ -26,87 +27,182 @@ export default class PdfBuilder {
 
   constructor(docTemplate: string, docData: string) {
     this.templateStr = docTemplate;
-    console.log("DOCUMENT STRING LOADED");
     this.dataStr = docData;
-    console.log("DATA STRING LOADED");
-    this.templateObj = JSON.parse(docTemplate);
-    console.log("DOCUMENT SERIALIZED");
-    this.ctx = JSON.parse(docData);
-    console.log("DATA SERIALIZED");
+    logger.debug("builder.template_received", {
+      chars: typeof docTemplate === "string" ? docTemplate.length : undefined,
+    });
+    logger.debug("builder.data_received", {
+      chars: typeof docData === "string" ? docData.length : undefined,
+      data: docData,
+    });
+
+    try {
+      this.templateObj = JSON.parse(docTemplate);
+    } catch (e) {
+      // A blank/garbage `doc` field in the templates collection lands here.
+      logger.error("builder.template_parse_failed", {
+        template: docTemplate,
+        hint: "the template's `doc` field is not valid JSON (an empty doc field hits this)",
+        error: serializeError(e),
+      });
+      throw e;
+    }
+
+    try {
+      this.ctx = JSON.parse(docData);
+    } catch (e) {
+      logger.error("builder.data_parse_failed", {
+        data: docData,
+        hint: "the token's `docData` field is not valid JSON",
+        error: serializeError(e),
+      });
+      throw e;
+    }
+
+    logger.debug("builder.parsed", {
+      pages: Array.isArray(this.templateObj) ? this.templateObj.length : "template is not an array",
+      dataKeys: this.ctx && typeof this.ctx === "object" ? Object.keys(this.ctx) : undefined,
+    });
     this.currentPage = undefined;
   }
 
   async build() {
+    const startedAt = performance.now();
+    const pageCount = Array.isArray(this.templateObj) ? this.templateObj.length : 1;
+    logger.info("builder.build.start", { pages: pageCount });
+
     for (const page of this.templateObj) {
       const index: any = this.templateObj.indexOf(page);
-      console.log("Doc Index: ", index);
+      const pageStartedAt = performance.now();
+      logger.debug("builder.page.start", {
+        index,
+        format: page.format,
+        orientation: page.orientation,
+        margin: page.margin,
+        baseFont: page.baseFont,
+        baseFontSize: page.baseFontSize,
+        fonts: page.fonts?.length ?? 0,
+        bgImages: page.bgImages?.length ?? 0,
+        shapes: page.shapes?.length ?? 0,
+        labels: page.labels?.length ?? 0,
+        data: page.data?.length ?? 0,
+      });
+
       this.doc = new PDFDocument({
         size: page.format,
         layout: page.orientation,
         margin: page.margin || 0,
+        bufferPages: true,
       });
       this.allowLineBreakDefault = page.allowLineBreak || false;
       this.currentPage = page;
-      await this.loadFonts();
+
+      const stage = async (name: string, fn: () => Promise<void>) => {
+        const stageStartedAt = performance.now();
+        await fn();
+        logger.debug("builder.stage.done", {
+          index,
+          stage: name,
+          durationMs: Math.round((performance.now() - stageStartedAt) * 100) / 100,
+        });
+      };
+
+      await stage("fonts", () => this.loadFonts());
       //TODO Load these based off env vars
-      await this.processBgImg();
+      await stage("bgImages", () => this.processBgImg());
       // await this.processImages()
-      await this.processShapes();
+      await stage("shapes", () => this.processShapes());
       if (this.currentPage?.labels) {
-        await this.processLabels(); //Process all objects in the label array
+        await stage("labels", () => this.processLabels()); //Process all objects in the label array
       } else {
-        console.log("NO LABELS TO PROCESS");
+        logger.debug("builder.labels.skipped", { index });
       }
 
       if (this.currentPage?.data) {
-        await this.processData(); //Process all objects in the data array
+        await stage("data", () => this.processData()); //Process all objects in the data array
       } else {
-        console.log("NO DATA TO PROCESS");
+        logger.debug("builder.data.skipped", { index });
       }
+
+      logger.info("builder.page.done", {
+        index,
+        durationMs: Math.round((performance.now() - pageStartedAt) * 100) / 100,
+      });
     }
 
+    logger.info("builder.build.done", {
+      pages: pageCount,
+      durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+    });
     return;
   }
 
   protected async loadFonts() {
-    console.log("LOADING FONTS FROM TEMPLATE");
-    for (const f of this.currentPage?.fonts || []) {
-      console.log("FONT DATA: ", f);
-      const ab = await getFontResource(f.fontId);
+    const fonts = this.currentPage?.fonts || [];
+    logger.debug("builder.loadFonts", { count: fonts.length });
+    for (const f of fonts) {
+      logger.debug("builder.font.request", { fontId: f.fontId, fontFile: f.fontFile });
+      let ab: ArrayBuffer;
+      try {
+        // Looked up in the `fonts` collection by `name` - a missing record is a 404.
+        ab = await getFontResource(f.fontId);
+      } catch (e) {
+        logger.error("builder.font.failed", {
+          fontId: f.fontId,
+          fontFile: f.fontFile,
+          hint: "no `fonts` record has this name; templates must reference the record's `name` code",
+          error: serializeError(e),
+        });
+        throw e;
+      }
+      logger.debug("builder.font.registering", { fontId: f.fontId, bytes: ab.byteLength });
       this.doc?.registerFont(f.fontId, ab);
     }
   }
 
   protected async processBgImg() {
-    console.log("NOW PROCESSING IMAGES");
+    const images = this.currentPage?.bgImages || [];
+    logger.debug("builder.processBgImg", { count: images.length });
     //loop through images in template document.
-    for (const img of this.currentPage?.bgImages || []) {
-      console.log("IMAGE DATA: ", img);
+    for (const img of images) {
+      logger.debug("builder.image.request", img);
       const ab = await getImageResource(img.fileName as string);
+      logger.debug("builder.image.registering", {
+        fileName: img.fileName,
+        bytes: ab.byteLength,
+        x: img.x,
+        y: img.y,
+        options: this.extractImageOptions(img),
+      });
       this.doc?.image(ab, img.x, img.y, this.extractImageOptions(img));
     }
   }
 
   protected async processImages() {
-    console.log("NOW PROCESSING WEB IMAGES");
-    if (this.currentPage!.images == undefined) {
-      console.log("NO WEB IMAGES TO PROCESS");
+    const images = this.currentPage!.images;
+    logger.debug("builder.processImages", { count: images?.length ?? 0 });
+    if (images == undefined) {
+      logger.debug("builder.images.skipped", { reason: "no images on this page" });
       return;
     }
 
-    for (const img of this.currentPage!.images) {
+    for (const img of images) {
       if (img.url == undefined) {
+        logger.warn("builder.image.skipped", { reason: "image has no url", image: img });
         return;
       }
-      console.log("IMAGE: ", img);
-      console.log("RETREIVING IMAGE: ", img.url);
+      logger.debug("builder.image.fetching", { url: img.url });
       const response = await fetch(img.url);
       if (!response.ok) {
-        console.log("HTTP-Error: " + response.status);
+        logger.error("builder.image.fetch_failed", {
+          url: img.url,
+          status: response.status,
+          statusText: response.statusText,
+        });
         return;
       }
       const arrayBuffer = await response.arrayBuffer();
-      console.log("IMAGE BUFFER: ", arrayBuffer);
+      logger.debug("builder.image.fetched", { url: img.url, bytes: arrayBuffer.byteLength });
 
       this.doc?.image(arrayBuffer, img.x, img.y, this.extractImageOptions(img));
     }
@@ -114,16 +210,17 @@ export default class PdfBuilder {
   }
 
   protected async processShapes() {
-    console.log("NOW PROCESSING SHAPES");
-    if (this.currentPage!.shapes == undefined) {
-      console.log("NO SHAPES TO PROCESS");
+    const shapes = this.currentPage!.shapes;
+    logger.debug("builder.processShapes", { count: shapes?.length ?? 0 });
+    if (shapes == undefined) {
+      logger.debug("builder.shapes.skipped", { reason: "no shapes on this page" });
       return;
     }
 
-    this.currentPage!.shapes?.forEach((shape: Shape, index: number) => {
-      console.log("SHAPE: ", shape);
+    shapes?.forEach((shape: Shape, index: number) => {
+      logger.debug("builder.shape", { index, type: shape.type, shape });
       if (shape.type == "rect") {
-        console.log("FILL AND STROKE EXECUTED");
+        logger.debug("builder.shape.rect", { index, fill: shape.fillColor, stroke: shape.strokeColor });
         this.doc?.lineWidth(shape.lineWidth || 0);
         this.doc
           ?.roundedRect(
@@ -143,6 +240,7 @@ export default class PdfBuilder {
       }
 
       if (shape.type == "circle") {
+        logger.debug("builder.shape.circle", { index, fill: shape.fillColor, stroke: shape.strokeColor });
         this.doc?.lineWidth(shape.lineWidth || 0);
         if (shape.dash && shape.space) {
           this.doc
@@ -168,6 +266,7 @@ export default class PdfBuilder {
       }
 
       if (shape.type == "line") {
+        logger.debug("builder.shape.line", { index, stroke: shape.strokeColor });
         this.doc?.lineWidth(shape.lineWidth || 0);
         if (shape.dash && shape.space) {
           this.doc?.moveTo(shape.x, shape.y);
@@ -189,27 +288,29 @@ export default class PdfBuilder {
           .stroke(shape.strokeColor || "black");
         return;
       }
+
+      logger.warn("builder.shape.unknown_type", { index, type: shape.type, shape });
     });
   }
 
   protected async processLabels() {
-    console.log("NOW PROCESSING LABELS");
+    logger.debug("builder.processLabels", { count: this.currentPage!.labels?.length ?? 0 });
     this.currentPage!.labels?.forEach((lblObj: Label, index: number) => {
-      console.log("Label Index: ", index);
-      console.log("LABEL: ", lblObj);
+      const resolved = this.resolveFormatAndType(lblObj);
+      logger.debug("builder.label", { index, label: lblObj, resolved });
       if (lblObj.font) {
         this.doc
           ?.font(lblObj.font)
           .fontSize(<number>lblObj.fontSize || <number>this.baseFontSize)
           .fillColor(lblObj.color || "black")
-          .text(this.resolveFormatAndType(lblObj), lblObj.x, lblObj.y, {
+          .text(resolved, lblObj.x, lblObj.y, {
             lineBreak: lblObj.allowLineBreak || this.allowLineBreakDefault,
           });
       } else {
         this.doc
           ?.fontSize(<number>lblObj.fontSize || <number>this.baseFontSize) // Use font size if its available
           .fillColor(lblObj.color || "black")
-          .text(this.resolveFormatAndType(lblObj), lblObj.x, lblObj.y, {
+          .text(resolved, lblObj.x, lblObj.y, {
             lineBreak: lblObj.allowLineBreak || this.allowLineBreakDefault,
           });
       }
@@ -218,17 +319,18 @@ export default class PdfBuilder {
   }
 
   protected async processData() {
-    console.log("NOW PROCESSING DATA");
+    logger.debug("builder.processData", { count: this.currentPage!.data?.length ?? 0 });
     //Process all data assets
     this.currentPage!.data.forEach((dataObj: Data, index: number) => {
-      console.log("DATA: ", dataObj.name);
+      const resolved = this.resolveFormatAndType(dataObj);
+      logger.debug("builder.data_item", { index, name: dataObj.name, type: dataObj.type, format: dataObj.format, resolved });
       if (dataObj.font) {
         //Prints data with specific font
         this.doc
           ?.font(dataObj.font)
           .fillColor(dataObj.color || "black")
           .fontSize(dataObj.fontSize as number)
-          .text(this.resolveFormatAndType(dataObj), dataObj.x, dataObj.y, {
+          .text(resolved, dataObj.x, dataObj.y, {
             lineBreak: dataObj.allowLineBreak || this.allowLineBreakDefault,
           });
       } else {
@@ -236,7 +338,7 @@ export default class PdfBuilder {
         this.doc
           ?.fillColor(dataObj.color || "black")
           .fontSize(<number>dataObj.fontSize || <number>this.baseFontSize) //use font size if available
-          .text(this.resolveFormatAndType(dataObj), dataObj.x, dataObj.y, {
+          .text(resolved, dataObj.x, dataObj.y, {
             lineBreak: dataObj.allowLineBreak || this.allowLineBreakDefault,
           });
       }
@@ -247,6 +349,15 @@ export default class PdfBuilder {
   protected resolveFormatAndType(dataObj: Data | Label): string {
     if ((<Data>dataObj).name) {
       const obj = <Data>dataObj; //Cast object to shorter name
+      // A template field with no matching key in the submitted payload renders
+      // as blank/undefined - worth knowing about when a PDF comes out empty.
+      if (this.ctx?.[obj.name] === undefined) {
+        logger.warn("builder.data_field_missing", {
+          field: obj.name,
+          availableKeys: this.ctx && typeof this.ctx === "object" ? Object.keys(this.ctx) : undefined,
+          hint: "the template references this field but the payload/token does not contain it",
+        });
+      }
       if (obj.type == "string") {
         //Checks if data type is a string
         switch (
@@ -282,6 +393,7 @@ export default class PdfBuilder {
       }
     }
 
+    logger.warn("builder.entry_unresolved", { entry: dataObj });
     return "ERROR";
   }
 
@@ -296,9 +408,15 @@ export default class PdfBuilder {
   }
 
   async renderS(stream: any) {
-    //Working delivery method
-    this.doc?.pipe(stream);
-    this.doc?.end();
+    logger.debug("builder.renderS", {
+      docDefined: Boolean(this.doc),
+      docConstructor: this.doc ? this.doc.constructor.name : undefined,
+      stream: stream?.constructor?.name,
+    });
+    if (!this.doc) throw new Error('No PDFDocument instance available');
+
+    this.doc.pipe(stream);
+    this.doc.end();
   }
 
   end() {
