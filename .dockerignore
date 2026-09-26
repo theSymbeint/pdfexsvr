@@ -1,0 +1,33 @@
+# Docker only ever reads a file named `.dockerignore`. This file used to be named
+# `dockerignore` (no dot), so it was silently ignored and `COPY . .` pulled .env
+# (live DB credentials) plus 103MB of macOS-arm64 node_modules into the image.
+#
+# NOTE: patterns here also apply to explicit COPY sources, so anything the
+# Dockerfile copies on purpose - package.json, pnpm-lock.yaml, tsconfig.json,
+# src/, public/ - must NOT be listed below.
+
+# --- secrets: never baked into an image ---
+.env
+.env.*
+*.pem
+*.key
+
+# --- host artifacts: wrong architecture, large, or generated in-image ---
+node_modules
+dist
+build
+
+# --- vcs, editors, os noise ---
+.git
+.gitignore
+.idea
+.vscode
+.DS_Store
+
+# --- not useful inside the image ---
+Dockerfile
+.dockerignore
+README.md
+scripts
+test-output.pdf
+*.log
